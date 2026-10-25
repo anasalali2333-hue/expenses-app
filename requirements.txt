@@ -1,0 +1,12 @@
+streamlit  
+groq  
+pandas  
+PyPDF2  
+requests  
+tavily-python  
+plotly  
+fpdf2  
+PyMuPDF  
+arabic-reshaper  
+python-bidi  
+openpyxl 
