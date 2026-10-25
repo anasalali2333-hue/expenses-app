@@ -23,13 +23,12 @@ IMAGES_DIR = "receipts_images"
 st.set_page_config(page_title="مصاريفي", page_icon="🧾", layout="centered")
 os.makedirs(IMAGES_DIR, exist_ok=True)
 
-# ============ إنشاء قاعدة البيانات تلقائياً ============
+# ============ إنشاء قاعدة البيانات تلقائياً للسحابة ============
 def get_db_connection():
     conn = sqlite3.connect(DB_FILE)
     conn.row_factory = sqlite3.Row
     return conn
 
-# هذه الدالة ستنشئ الجداول إذا لم تكن موجودة
 def setup_database():
     conn = get_db_connection()
     cursor = conn.cursor()
@@ -39,8 +38,9 @@ def setup_database():
     conn.commit()
     conn.close()
 
-setup_database() # <--- استدعاء الإنشاء
+setup_database()
 
+# ============ دوال قاعدة البيانات ============
 def save_invoice(date, desc, inv_num, total, category, image_path, items_df):
     conn = get_db_connection()
     cursor = conn.cursor()
@@ -69,6 +69,7 @@ def delete_invoice(transaction_id, image_path):
         try: os.remove(image_path)
         except: pass
 
+# ============ معالجة الملفات ============
 def convert_pdf_to_image(pdf_bytes):
     try:
         doc = fitz.open(stream=pdf_bytes, filetype="pdf")
@@ -79,31 +80,44 @@ def convert_pdf_to_image(pdf_bytes):
         return img_bytes
     except: return None
 
+# ============ الذكاء الاصطناعي (الحل النصي للصور المائلة) ============
 def extract_invoice_data(image_bytes):
     try:
         image_base64 = base64.b64encode(image_bytes).decode("utf-8")
         client = Groq(api_key=GROQ_API_KEY)
+        
         prompt = """أنت نظام استخراج بيانات فائق الدقة (OCR).
 تخيل أنك تقرأ الفاتورة كتيار نصي مستمر من الأعلى إلى الأسفل، سطراً بسطر.
 مهمتك: استخراج أسماء المنتجات والأسعار الخاصة بها.
-⚠️ القاعدة الذهبية: عندما تقرأ اسم منتج، استمر في القراءة على نفس السطر حتى تجد أول مبلغ رقمي. اربط هذا المبلغ بالمنتج الذي قرأته للتو.
+⚠️ القاعدة الذهبية: عندما تقرأ اسم منتج (مثل Apfel 5kg Karton)، استمر في القراءة على نفس السطر أو السطر الذي يليه مباشرة حتى تجد أول مبلغ رقمي (مثل 4.99). اربط هذا المبلغ بالمنتج الذي قرأته للتو.
+لا تضيع المبلغ للمنتج التالي. كل منتج يتبعه سعره الخاص.
+
 أعد البيانات بصيغة JSON فقط:
 {
   "store_name": "اسم المتجر", "date": "YYYY-MM-DD", "invoice_number": "رقم الفاتورة",
   "total": 14.60, "category": "طعام أو وقود أو منزل أو أخرى",
   "items": [{"name": "اسم المنتج", "qty": 1, "price": 0.0, "total": 0.0}]
 }"""
+
         response = client.chat.completions.create(
-            model=MODEL_NAME, max_tokens=1000,
-            messages=[{"role": "user", "content": [{"type": "text", "text": prompt}, {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{image_base64}"}}]}], 
+            model=MODEL_NAME, 
+            max_tokens=1000,
+            messages=[{"role": "user", "content": [
+                {"type": "text", "text": prompt},
+                {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{image_base64}"}}
+            ]}], 
             temperature=0.1,
         )
+        
         content = response.choices[0].message.content
         if "```json" in content: content = content.split("```json")[1].split("```")[0]
         elif "```" in content: content = content.split("```")[1].split("```")[0]
-        return json.loads(content.strip()), None
+        
+        data = json.loads(content.strip())
+        return data, None
     except Exception as e: return None, str(e)
 
+# ============ المساعد الذكي ============
 def ask_database(question):
     try:
         conn = get_db_connection()
@@ -113,21 +127,28 @@ def ask_database(question):
         if not invoices:
             conn.close()
             return "لا توجد فواتير مسجلة بعد."
+        
         cursor.execute("SELECT transaction_id, item_name, quantity, line_total FROM invoice_items")
         items_data = [dict(row) for row in cursor.fetchall()]
         conn.close()
+        
         context = "بيانات الفواتير:\n"
         for inv in invoices:
             context += f"- المتجر: {inv['description']} | التاريخ: {inv['invoice_date']} | الإجمالي: {inv['total_amount']} €\n"
             invoice_items = [i for i in items_data if i['transaction_id'] == inv['transaction_id']]
             if invoice_items:
-                context += "  (البنود: " + "، ".join([f"{item['item_name']} (المجموع: {item['line_total']})" for item in invoice_items]) + ")\n"
+                context += "  (البنود: "
+                for item in invoice_items:
+                    context += f"{item['item_name']} (المجموع: {item['line_total']})، "
+                context += ")\n"
+        
         client = Groq(api_key=GROQ_API_KEY)
         prompt = f"بناءً على البيانات التالية، أجب على سؤال المستخدم بالعربية بدقة:\n{context}\n\nسؤال: {question}"
         response = client.chat.completions.create(model=MODEL_NAME, max_tokens=500, messages=[{"role": "user", "content": prompt}], temperature=0.2)
         return response.choices[0].message.content
     except Exception as e: return f"خطأ: {str(e)}"
 
+# ============ إنشاء PDF (مع إصلاح الحروف) ============
 def create_pdf(df):
     pdf = FPDF()
     pdf.add_page()
@@ -178,6 +199,7 @@ if page == "📸 إضافة فاتورة":
     st.subheader("صوّر الفاتورة أو ارفعها")
     cam = st.camera_input("التقط صورة")
     upl = st.file_uploader("أو ارفع صورة / PDF", type=["jpg", "jpeg", "png", "pdf"])
+    
     img_bytes = None
     if cam: img_bytes = cam.getvalue()
     elif upl:
@@ -185,6 +207,7 @@ if page == "📸 إضافة فاتورة":
             with st.spinner("جاري تحويل الـ PDF..."):
                 img_bytes = convert_pdf_to_image(upl.read())
         else: img_bytes = upl.getvalue()
+    
     if img_bytes:
         st.image(img_bytes, caption="الفاتورة", width=300)
         if st.button("🧠 اقرأ الفاتورة", use_container_width=True):
@@ -195,6 +218,7 @@ if page == "📸 إضافة فاتورة":
                     st.session_state.temp_data = data
                     st.session_state.temp_img = img_bytes
                     st.success("✅ تم القراءة. يرجى تأكيد الحفظ.")
+
     if "temp_data" in st.session_state:
         data = st.session_state.temp_data
         col1, col2 = st.columns(2)
@@ -204,15 +228,17 @@ if page == "📸 إضافة فاتورة":
         with col2:
             total = st.number_input("الإجمالي:", value=float(data.get("total", 0.0)), step=0.01)
             category = st.selectbox("الفئة:", ["طعام", "وقود", "منزل", "صحة", "ترفيه", "أخرى"], index=0)
+            
         st.write("**البنود:**")
         df_items = pd.DataFrame([{"المنتج": i.get("name", ""), "الكمية": i.get("qty", 1), "سعر الوحدة": i.get("price", 0.0), "الإجمالي": i.get("total", 0.0)} for i in data.get("items", [])])
         edited_df = st.data_editor(df_items, num_rows="dynamic", use_container_width=True)
+        
         if st.button("💾 حفظ الفاتورة", use_container_width=True):
             img_filename = f"receipt_{datetime.now().strftime('%Y%m%d_%H%M%S')}.jpg"
             img_path = os.path.join(IMAGES_DIR, img_filename)
             with open(img_path, "wb") as f: f.write(st.session_state.temp_img)
             trans_id = save_invoice(inv_date, store_name, data.get("invoice_number", ""), total, category, img_path, edited_df)
-            st.success(f"✅ تم الحفظ! (رقم العملية: {trans_id})")
+            st.success(f"✅ تم الحفظ بنجاح! (رقم العملية: {trans_id})")
             st.balloons()
             del st.session_state.temp_data
             del st.session_state.temp_img
@@ -229,15 +255,19 @@ elif page == "📊 كشف الإجمالي":
         df_display.index += 1
         st.dataframe(df_display.rename(columns={"transaction_id": "رقم العملية", "invoice_date": "التاريخ", "description": "الوصف", "category": "الفئة", "total_amount": "المبلغ"}))
         st.metric("إجمالي المصاريف", f"{df['total_amount'].sum():.2f} €")
+        
         col1, col2 = st.columns(2)
         with col1:
             output_excel = BytesIO()
-            with pd.ExcelWriter(output_excel, engine='openpyxl') as writer: df_display.to_excel(writer, index=False)
+            with pd.ExcelWriter(output_excel, engine='openpyxl') as writer:
+                df_display.to_excel(writer, index=False)
             st.download_button("⬇️ تحميل Excel", output_excel.getvalue(), "expenses.xlsx", use_container_width=True)
         with col2:
             if st.button("⬇️ إنشاء PDF", use_container_width=True):
                 pdf_file = create_pdf(df_display)
-                with open(pdf_file, "rb") as f: st.download_button("📄 تحميل PDF", f, "expenses.pdf", mime="application/pdf", use_container_width=True)
+                with open(pdf_file, "rb") as f:
+                    st.download_button("📄 تحميل PDF", f, "expenses.pdf", mime="application/pdf", use_container_width=True)
+        
         st.divider()
         st.subheader("🗑️ حذف فاتورة")
         invoice_to_delete = st.selectbox("اختر رقم العملية للحذف:", df["transaction_id"].tolist(), format_func=lambda x: f"عملية رقم {x} - {df[df['transaction_id']==x]['description'].values[0]}")
@@ -257,9 +287,14 @@ elif page == "🎯 الميزانية":
     spent_data = {row["category"]: row["spent"] for row in cursor.fetchall()}
     conn.close()
     categories = ["طعام", "وقود", "منزل", "صحة", "ترفيه", "أخرى"]
+    
     with st.form("budget_form"):
         st.write("أدخل المبلغ المخصص لكل فئة:")
-        new_budgets = {cat: st.number_input(f"ميزانية {cat}:", min_value=0.0, value=float(budgets_data.get(cat, 0.0)), step=10.0) for cat in categories}
+        new_budgets = {}
+        for cat in categories:
+            default_val = float(budgets_data.get(cat, 0.0))
+            new_budgets[cat] = st.number_input(f"ميزانية {cat}:", min_value=0.0, value=default_val, step=10.0)
+        
         if st.form_submit_button("💾 حفظ الميزانية"):
             conn = get_db_connection()
             cursor = conn.cursor()
@@ -269,6 +304,7 @@ elif page == "🎯 الميزانية":
             conn.close()
             st.success("✅ تم حفظ الميزانية بنجاح!")
             st.rerun()
+
     st.divider()
     st.subheader("حالة الميزانية الحالية")
     for cat in categories:
@@ -277,10 +313,16 @@ elif page == "🎯 الميزانية":
         if budget > 0:
             percentage = (spent / budget) * 100
             st.write(f"**{cat}:** صرفت {spent:.2f} € من أصل {budget:.2f} €")
-            if percentage >= 100: st.error(f"⚠️ تجاوزت الميزانية! ({percentage:.1f}%)"); st.progress(1.0)
-            elif percentage >= 80: st.warning(f"تحذير: أنت على وشك تجاوز الميزانية ({percentage:.1f}%)"); st.progress(percentage / 100)
-            else: st.progress(percentage / 100)
-        else: st.info(f"{cat}: لم يتم تحديد ميزانية بعد. (صرفت {spent:.2f} €)")
+            if percentage >= 100:
+                st.error(f"⚠️ تجاوزت الميزانية! ({percentage:.1f}%)")
+                st.progress(1.0)
+            elif percentage >= 80:
+                st.warning(f"تحذير: أنت على وشك تجاوز الميزانية ({percentage:.1f}%)")
+                st.progress(percentage / 100)
+            else:
+                st.progress(percentage / 100)
+        else:
+            st.info(f"{cat}: لم يتم تحديد ميزانية بعد. (صرفت {spent:.2f} €)")
 
 elif page == "📈 الإحصائيات":
     st.subheader("أين تذهب أموالك؟")
@@ -309,6 +351,7 @@ elif page == "🖼️ أرشيف الصور":
     conn = get_db_connection()
     df_images = pd.read_sql_query("SELECT transaction_id, invoice_date, description, image_path FROM invoices ORDER BY transaction_id DESC", conn)
     conn.close()
+    
     if df_images.empty: st.info("لا توجد صور محفوظة بعد.")
     else:
         for _, row in df_images.iterrows():
