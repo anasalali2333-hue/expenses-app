@@ -24,6 +24,18 @@ st.set_page_config(page_title="مصاريفي", page_icon="🧾", layout="center
 os.makedirs(IMAGES_DIR, exist_ok=True)
 
 # ============ دوال قاعدة البيانات ============
+def setup_database():
+    conn = sqlite3.connect(DB_FILE)
+    cursor = conn.cursor()
+    cursor.execute('''CREATE TABLE IF NOT EXISTS invoices (transaction_id INTEGER PRIMARY KEY AUTOINCREMENT, invoice_date TEXT, description TEXT, invoice_number TEXT, total_amount REAL, category TEXT, image_path TEXT, created_at TEXT)''')
+    cursor.execute('''CREATE TABLE IF NOT EXISTS invoice_items (item_id INTEGER PRIMARY KEY AUTOINCREMENT, transaction_id INTEGER, item_name TEXT, quantity REAL, unit_price REAL, line_total REAL, FOREIGN KEY (transaction_id) REFERENCES invoices (transaction_id))''')
+    cursor.execute('''CREATE TABLE IF NOT EXISTS budgets (category TEXT PRIMARY KEY, amount REAL)''')
+    conn.commit()
+    conn.close()
+
+# استدعاء الدالة عند بدء التطبيق
+if not os.path.exists(DB_FILE):
+    setup_database()
 def get_db_connection():
     conn = sqlite3.connect(DB_FILE)
     conn.row_factory = sqlite3.Row
